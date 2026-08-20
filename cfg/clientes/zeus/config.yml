@@ -1,0 +1,34 @@
+# Configuração dos PDFs Wingraph do cliente Zeus, por mês de referência.
+#
+# Estrutura:
+#   {mes_ref}:          ← formato AAAA-MM (ex.: "2026-01")
+#     - empresa_origem: nome da empresa/CNPJ para auditoria
+#       tipo: pagar | receber
+#       arquivo: caminho absoluto ou relativo à raiz do projeto
+#
+# Múltiplas entradas do mesmo mês são consolidadas em um único CSV de saída.
+# empresa_origem é mantida nos lançamentos para filtro/auditoria, mas não
+# afeta o DRE nem é tratada como centro de custo.
+
+"2026-01":
+  - empresa_origem: Zeus
+    tipo: pagar
+    arquivo: "/Users/rafaelpaim/Library/CloudStorage/OneDrive-ValandroGestãoLtda/Clientes/Zeus/General/DRE - DFC/2026/01-26/DRE/ZEUS AP Contas_a_Pagar__Receber_por_Class._de_Conta_2026.02.25-12.04.26.pdf"
+  - empresa_origem: Zeus
+    tipo: receber
+    arquivo: "/Users/rafaelpaim/Library/CloudStorage/OneDrive-ValandroGestãoLtda/Clientes/Zeus/General/DRE - DFC/2026/01-26/DRE/ZEUS AR - Contas_a_Pagar__Receber_por_Class._de_Conta_2026.02.27-16.16.12.pdf"
+
+# Exemplo para múltiplos CNPJs (descomente e ajuste conforme necessário):
+# "2026-02":
+#   - empresa_origem: Zeus Matriz
+#     tipo: pagar
+#     arquivo: "/caminho/para/zeus_matriz_ap_2026-02.pdf"
+#   - empresa_origem: Zeus Matriz
+#     tipo: receber
+#     arquivo: "/caminho/para/zeus_matriz_ar_2026-02.pdf"
+#   - empresa_origem: Zeus Filial
+#     tipo: pagar
+#     arquivo: "/caminho/para/zeus_filial_ap_2026-02.pdf"
+#   - empresa_origem: Zeus Filial
+#     tipo: receber
+#     arquivo: "/caminho/para/zeus_filial_ar_2026-02.pdf"

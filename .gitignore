@@ -1,0 +1,28 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Dados brutos / arquivos de clientes
+*.xls
+*.xlsx
+*.pdf
+
+# Saídas geradas
+saida/
+saida_real/
+
+# IDE
+.vscode/
+.idea/
+!sample_data/exemplo_conta_azul.xlsx
