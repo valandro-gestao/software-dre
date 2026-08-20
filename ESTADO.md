@@ -49,6 +49,19 @@ Categorias não mapeadas neste run (40): Aluguel/Condomínio/IPTU, INSS, Serviç
 - FGTS aparece com R$ 4.354,47 no DRE. INSS/IRRF aparece zerado (estava na lista de não mapeadas).
 - O plano foi carregado via fallback legado (`~/Downloads/plano_contas_zeus.csv`), não pelo canônico `cfg/clientes/zeus/plano_contas_cliente.csv` (que não existe).
 
+**Ambiguidade de fonte do plano Zeus:** existem dois arquivos com conteúdos diferentes.
+
+| Arquivo | Data | Formato | Observação |
+|---|---|---|---|
+| `~/Downloads/plano_contas_zeus.csv` | 18/05, 17:08 | 6 colunas (antigo) | Arquivo efetivamente usado pelo pipeline hoje (fallback legado) |
+| `cfg/clientes/zeus/plano_contas_zeus.csv` | 06/07, 14:43 | 9 colunas (novo) | Presente no repositório, mas fora do caminho de resolução — nunca carregado pelo pipeline |
+
+O arquivo do repositório é mais recente e usa o novo formato com `exibir_dre`, `auditoria_only` e `categoria_origem`. No entanto, **não há evidência suficiente para afirmar que ele foi aprovado como nova fonte de verdade**: não existe decisão documentada sobre a migração, e o arquivo nunca foi colocado no caminho canônico (`plano_contas_cliente.csv`) nem referenciado de nenhuma outra forma pelo pipeline.
+
+O arquivo mais recente contém contas de nível 4 (INSS/IRRF id=76, FGTS id=77). O motor DRE processa apenas níveis 1–3; nível 4 é silenciosamente ignorado. A decisão gerencial sobre essas contas (manter em nível 4, promover para nível 3, ou consolidar no pai "Encargos da Folha") **não foi registrada e permanece desconhecida**.
+
+Antes do próximo processamento Zeus: decidir qual dos dois arquivos representa a regra gerencial correta, como tratar as contas de nível 4, e somente então colocar o arquivo escolhido no caminho canônico. Não assumir que nenhuma das versões existentes está correta sem essa validação.
+
 ### Zixbe — 2026-04 (run: 18/05/2026, 18:58)
 
 | Indicador | Valor |
@@ -79,7 +92,8 @@ Os seguintes itens **não foram confirmados** e não devem ser tratados como est
 - **Reproduzibilidade do DRE Zeus 2026-01**: os arquivos de entrada (PDFs OneDrive) e o plano de contas utilizado no run de junho não coincidem com o estado atual do repositório.
 - **Código atual sem regressões**: as alterações mais recentes (plano_contas.py, pipeline.py, mapeamentos.py) não foram testadas com uma execução real após as mudanças.
 - **Mapeamento Zixbe via CSV funcional**: com o plano antigo (6 colunas), `ler_mapeamento_plano()` retorna `{}`. O mapeamento depende inteiramente do Supabase ou de config manual, e o estado atual do `mapeamentos_cliente` no Supabase não está documentado.
-- **Contas de nível 4 Zeus tratadas corretamente**: INSS/IRRF (id=76, nível=4) e FGTS (id=77, nível=4) estão no plano atual mas o DRE processa apenas níveis 1–3. O comportamento gerencial correto desses itens não foi definido.
+- **Contas de nível 4 Zeus tratadas corretamente**: INSS/IRRF (id=76, nível=4) e FGTS (id=77, nível=4) estão no arquivo mais recente do plano (`cfg/clientes/zeus/plano_contas_zeus.csv`, Jul 6), mas o DRE processa apenas níveis 1–3. O comportamento gerencial correto desses itens não foi definido. Desconhecido se a introdução das contas em nível 4 foi intencional ou acidental.
+- **Estado do Supabase após investigação de integridade**: houve investigação anterior relacionada ao isolamento de dados entre clientes, resultando nas proteções defensivas descritas na seção de pendências. Não há evidência suficiente para confirmar a causa raiz exata, quais dados foram afetados ou se o estado atual das tabelas por cliente e competência está íntegro.
 
 ---
 
@@ -87,15 +101,19 @@ Os seguintes itens **não foram confirmados** e não devem ser tratados como est
 
 O próximo passo é tornar o processamento Zeus reproduzível no ambiente atual e validar o DRE contra uma apuração gerencial de referência. A sequência recomendada:
 
-### 1. Confirmar resolução do plano de contas
+### 1. Resolver a ambiguidade do plano de contas Zeus
 
-Verificar qual arquivo de plano de contas o pipeline efetivamente carrega na máquina atual:
+Existem dois arquivos com estruturas diferentes (ver seção "Último estado conhecido — Zeus"). Antes de qualquer run:
+
+1. Comparar o conteúdo dos dois arquivos (Downloads vs. repositório).
+2. Decidir qual versão representa a regra gerencial correta — incluindo a questão das contas de nível 4.
+3. Colocar o arquivo escolhido no caminho canônico (`cfg/clientes/zeus/plano_contas_cliente.csv`).
+
+Não renomear nem sobrescrever sem esta decisão. Confirmar qual arquivo o pipeline carrega:
 
 ```bash
 python main.py --client zeus --mes-ref 2026-01 2>&1 | grep -i "plano\|legado\|canônico"
 ```
-
-Se o pipeline usar o arquivo em `~/Downloads/` (legado), avaliar se é necessário migrar esse arquivo para `cfg/clientes/zeus/plano_contas_cliente.csv` antes de prosseguir. Não renomear nem sobrescrever sem comparar o conteúdo com o atual `cfg/clientes/zeus/plano_contas_zeus.csv`.
 
 ### 2. Executar Zeus 2026-01 sem persistência
 
@@ -144,7 +162,8 @@ Só considerar o ciclo ETL → DRE validado quando a apuração gerencial for co
 | D1 | `src/supabase_client.py → _upsert_plano_contas()` sincroniza apenas as 6 colunas básicas. Colunas `exibir_dre`, `auditoria_only` e `categoria_origem` não são persistidas no Supabase. |
 | D2 | Tabelas `dre_mensal` e `resumo_conferencia` no Supabase usam `cliente` (TEXT), não `cliente_id` (UUID). Migração de schema necessária para alinhar com a chave `clientes.cliente_id`. |
 | D3 | `cfg/clientes/zeus.yml` é um arquivo legado órfão (fora da pasta `zeus/`). O canônico é `cfg/clientes/zeus/config.yml`. O legado ainda funciona como fallback mas pode causar confusão. |
-| D4 | Contas nível 4 no `plano_contas_zeus.csv` (INSS/IRRF id=76, FGTS id=77): o DRE processa apenas níveis 1–3. O tratamento gerencial correto dessas contas (nível 3 pai = "Encargos da Folha", id=75) precisa ser definido. |
+| D4 | Contas nível 4 no `cfg/clientes/zeus/plano_contas_zeus.csv` (INSS/IRRF id=76, FGTS id=77): o DRE processa apenas níveis 1–3. O tratamento gerencial correto dessas contas (nível 3 pai = "Encargos da Folha", id=75) precisa ser definido. Desconhecido se a inclusão em nível 4 foi deliberada. |
+| D5 | **Integridade Supabase — investigação anterior**: o código contém proteções defensivas extensas em `src/supabase_client.py` (reverse-lookup de `cliente_id`, verificação de `upload_ids` antes de deletar, validação pós-insert, GROUP BY final) resultantes de investigação sobre isolamento de dados entre clientes. A causa raiz exata, os clientes/dados afetados e o estado atual das tabelas após essa investigação **não estão documentados**. Os CHECKPOINTs em `pipeline.py`/`main.py` (prints rotulados "CLIENTE RECEBIDO NO MAIN/PIPELINE/SUPABASE" e `RAW res.data`) parecem resíduos de debugging desse período — candidatos a remoção ou conversão para `logger.debug()`, mas a decisão não foi tomada. As validações de integridade (abort em divergência de `cliente_id`/`upload_id`) devem ser consideradas proteções permanentes. Antes de executar `--save-supabase --overwrite`, conferir o estado atual das tabelas por cliente e competência diretamente no Supabase. |
 
 ### Evolução futura
 
