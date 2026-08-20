@@ -26,6 +26,27 @@ As funcionalidades abaixo existem no código e foram revisadas nesta data:
 
 ---
 
+## Origem do plano de contas — processo "Gerador de Plano de Contas"
+
+Informação recuperada do antigo processo interno chamado "Gerador de Plano de Contas". Registrada aqui porque explica a origem das diferenças encontradas no plano Zeus (seção abaixo).
+
+O "Gerador de Plano de Contas" **não é um software independente** — é um processo assistido por IA para implantação/configuração de clientes do Software DRE. Sua saída (o CSV do plano de contas) alimenta diretamente o ETL. Por isso, qualquer evolução de schema que esse processo produza (ex.: número de níveis) precisa ser compatível com o motor do DRE **antes** de ser considerada padrão — a saída do gerador não é, por si só, fonte de verdade validada.
+
+O processo trabalha com três elementos:
+
+- **Categoria de Origem** — categoria como ela chega do ERP do cliente.
+- **Categoria Destino** — conta gerencial para a qual a categoria de origem é mapeada.
+- **Estrutura DRE** — hierarquia gerencial (níveis) na qual a conta destino está inserida.
+
+É um processo *human-in-the-loop*:
+1. analisar as categorias de origem e a estrutura;
+2. propor um de/para (origem → destino) e uma hierarquia;
+3. marcar itens incertos como `A CLASSIFICAR`, em vez de assumir uma classificação;
+4. apresentar o resultado para validação humana;
+5. só então gerar/persistir o plano de contas definitivo.
+
+---
+
 ## Último estado conhecido por cliente
 
 ### Zeus — 2026-01 (run: 01/06/2026, 20:39)
@@ -56,11 +77,17 @@ Categorias não mapeadas neste run (40): Aluguel/Condomínio/IPTU, INSS, Serviç
 | `~/Downloads/plano_contas_zeus.csv` | 18/05, 17:08 | 6 colunas (antigo) | Arquivo efetivamente usado pelo pipeline hoje (fallback legado) |
 | `cfg/clientes/zeus/plano_contas_zeus.csv` | 06/07, 14:43 | 9 colunas (novo) | Presente no repositório, mas fora do caminho de resolução — nunca carregado pelo pipeline |
 
-O arquivo do repositório é mais recente e usa o novo formato com `exibir_dre`, `auditoria_only` e `categoria_origem`. No entanto, **não há evidência suficiente para afirmar que ele foi aprovado como nova fonte de verdade**: não existe decisão documentada sobre a migração, e o arquivo nunca foi colocado no caminho canônico (`plano_contas_cliente.csv`) nem referenciado de nenhuma outra forma pelo pipeline.
+**Origem de cada versão** (ver seção "Origem do plano de contas — processo 'Gerador de Plano de Contas'" acima):
+- A versão antiga (`~/Downloads/plano_contas_zeus.csv`, 6 colunas) foi construída a partir de conteúdo textual da máscara DRE do Zeus, sem preservar informação visual da planilha, e trabalha essencialmente com até 3 níveis.
+- A versão nova (`cfg/clientes/zeus/plano_contas_zeus.csv`, 9 colunas) foi gerada posteriormente a partir da planilha XLSX da máscara DRE do Zeus, com a hierarquia inferida também pela formatação/indentação visual da planilha. Foi dessa interpretação visual que surgiram as contas de nível 4, incluindo INSS/IRRF e FGTS como filhas de "Encargos da Folha".
 
-O arquivo mais recente contém contas de nível 4 (INSS/IRRF id=76, FGTS id=77). O motor DRE processa apenas níveis 1–3; nível 4 é silenciosamente ignorado. A decisão gerencial sobre essas contas (manter em nível 4, promover para nível 3, ou consolidar no pai "Encargos da Folha") **não foi registrada e permanece desconhecida**.
+O arquivo do repositório é mais recente e usa o novo formato com `exibir_dre`, `auditoria_only` e `categoria_origem`. **Não há evidência de que essa versão de 9 colunas tenha sido homologada como nova fonte de verdade do Software DRE.** Ela representa uma evolução/proposta do processo de geração do plano, mas não houve reconciliação explícita com o motor do DRE: o arquivo nunca foi colocado no caminho canônico (`plano_contas_cliente.csv`) nem referenciado de nenhuma outra forma pelo pipeline.
 
-Antes do próximo processamento Zeus: decidir qual dos dois arquivos representa a regra gerencial correta, como tratar as contas de nível 4, e somente então colocar o arquivo escolhido no caminho canônico. Não assumir que nenhuma das versões existentes está correta sem essa validação.
+**Consequência arquitetural (nível 4):** o motor DRE (`etl/dre.py`) processa apenas níveis 1–3; nível 4 é silenciosamente ignorado no rollup. Isso **não deve ser tratado como bug do motor, nem como prova de que o motor deve passar a suportar nível 4** — é uma decisão gerencial/estrutural ainda pendente, com duas alternativas em aberto:
+1. o plano Zeus deve realmente possuir quatro níveis, e o motor do DRE precisa evoluir para suportá-los; ou
+2. a hierarquia interpretada a partir do XLSX deve ser normalizada para os três níveis atualmente suportados pelo motor.
+
+Essa decisão precisa ocorrer **antes** de promover `plano_contas_zeus.csv` para `plano_contas_cliente.csv` e **antes** do próximo teste Zeus 2026-01. Não assumir que nenhuma das versões existentes está correta sem essa decisão.
 
 ### Zixbe — 2026-04 (run: 18/05/2026, 18:58)
 
@@ -92,7 +119,7 @@ Os seguintes itens **não foram confirmados** e não devem ser tratados como est
 - **Reproduzibilidade do DRE Zeus 2026-01**: os arquivos de entrada (PDFs OneDrive) e o plano de contas utilizado no run de junho não coincidem com o estado atual do repositório.
 - **Código atual sem regressões**: as alterações mais recentes (plano_contas.py, pipeline.py, mapeamentos.py) não foram testadas com uma execução real após as mudanças.
 - **Mapeamento Zixbe via CSV funcional**: com o plano antigo (6 colunas), `ler_mapeamento_plano()` retorna `{}`. O mapeamento depende inteiramente do Supabase ou de config manual, e o estado atual do `mapeamentos_cliente` no Supabase não está documentado.
-- **Contas de nível 4 Zeus tratadas corretamente**: INSS/IRRF (id=76, nível=4) e FGTS (id=77, nível=4) estão no arquivo mais recente do plano (`cfg/clientes/zeus/plano_contas_zeus.csv`, Jul 6), mas o DRE processa apenas níveis 1–3. O comportamento gerencial correto desses itens não foi definido. Desconhecido se a introdução das contas em nível 4 foi intencional ou acidental.
+- **Contas de nível 4 Zeus tratadas corretamente**: INSS/IRRF (id=76, nível=4) e FGTS (id=77, nível=4) estão no arquivo mais recente do plano (`cfg/clientes/zeus/plano_contas_zeus.csv`, Jul 6). Confirmado que a introdução em nível 4 foi deliberada — resultado da inferência de hierarquia visual do processo "Gerador de Plano de Contas", não um erro de geração. Mas o DRE processa apenas níveis 1–3, e a decisão entre evoluir o motor para 4 níveis ou normalizar a hierarquia para 3 níveis não foi tomada.
 - **Estado do Supabase após investigação de integridade**: houve investigação anterior relacionada ao isolamento de dados entre clientes, resultando nas proteções defensivas descritas na seção de pendências. Não há evidência suficiente para confirmar a causa raiz exata, quais dados foram afetados ou se o estado atual das tabelas por cliente e competência está íntegro.
 
 ---
@@ -106,7 +133,7 @@ O próximo passo é tornar o processamento Zeus reproduzível no ambiente atual 
 Existem dois arquivos com estruturas diferentes (ver seção "Último estado conhecido — Zeus"). Antes de qualquer run:
 
 1. Comparar o conteúdo dos dois arquivos (Downloads vs. repositório).
-2. Decidir qual versão representa a regra gerencial correta — incluindo a questão das contas de nível 4.
+2. Decidir qual versão representa a regra gerencial correta — incluindo a decisão entre evoluir o motor do DRE para 4 níveis ou normalizar a hierarquia do plano novo para 3 níveis (ver "Origem do plano de contas").
 3. Colocar o arquivo escolhido no caminho canônico (`cfg/clientes/zeus/plano_contas_cliente.csv`).
 
 Não renomear nem sobrescrever sem esta decisão. Confirmar qual arquivo o pipeline carrega:
@@ -162,7 +189,7 @@ Só considerar o ciclo ETL → DRE validado quando a apuração gerencial for co
 | D1 | `src/supabase_client.py → _upsert_plano_contas()` sincroniza apenas as 6 colunas básicas. Colunas `exibir_dre`, `auditoria_only` e `categoria_origem` não são persistidas no Supabase. |
 | D2 | Tabelas `dre_mensal` e `resumo_conferencia` no Supabase usam `cliente` (TEXT), não `cliente_id` (UUID). Migração de schema necessária para alinhar com a chave `clientes.cliente_id`. |
 | D3 | `cfg/clientes/zeus.yml` é um arquivo legado órfão (fora da pasta `zeus/`). O canônico é `cfg/clientes/zeus/config.yml`. O legado ainda funciona como fallback mas pode causar confusão. |
-| D4 | Contas nível 4 no `cfg/clientes/zeus/plano_contas_zeus.csv` (INSS/IRRF id=76, FGTS id=77): o DRE processa apenas níveis 1–3. O tratamento gerencial correto dessas contas (nível 3 pai = "Encargos da Folha", id=75) precisa ser definido. Desconhecido se a inclusão em nível 4 foi deliberada. |
+| D4 | Contas nível 4 no `cfg/clientes/zeus/plano_contas_zeus.csv` (INSS/IRRF id=76, FGTS id=77): o DRE processa apenas níveis 1–3. A inclusão em nível 4 foi deliberada — resultado da inferência de hierarquia por indentação visual no processo "Gerador de Plano de Contas" (ver seção "Origem do plano de contas"), não um erro. Decisão pendente: evoluir o motor para suportar 4 níveis, ou normalizar essa hierarquia para 3 níveis antes de promover o arquivo a canônico. |
 | D5 | **Integridade Supabase — investigação anterior**: o código contém proteções defensivas extensas em `src/supabase_client.py` (reverse-lookup de `cliente_id`, verificação de `upload_ids` antes de deletar, validação pós-insert, GROUP BY final) resultantes de investigação sobre isolamento de dados entre clientes. A causa raiz exata, os clientes/dados afetados e o estado atual das tabelas após essa investigação **não estão documentados**. Os CHECKPOINTs em `pipeline.py`/`main.py` (prints rotulados "CLIENTE RECEBIDO NO MAIN/PIPELINE/SUPABASE" e `RAW res.data`) parecem resíduos de debugging desse período — candidatos a remoção ou conversão para `logger.debug()`, mas a decisão não foi tomada. As validações de integridade (abort em divergência de `cliente_id`/`upload_id`) devem ser consideradas proteções permanentes. Antes de executar `--save-supabase --overwrite`, conferir o estado atual das tabelas por cliente e competência diretamente no Supabase. |
 
 ### Evolução futura
