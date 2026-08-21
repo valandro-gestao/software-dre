@@ -192,20 +192,20 @@ def imprimir_relatorio_mapeamento(
 
 def validar_categorias_dre(
     lancamentos: List[dict],
-    nivel3_validas: set,
+    folhas_validas: set,
     mapeamentos_supabase: Dict[str, dict],
 ) -> None:
     """
     Verifica se os valores finais de categoria_origem nos lançamentos
-    correspondem a descrições de nível 3 do plano que contribuem para o DRE
-    (exibir_dre=True).
+    correspondem a descrições de conta-folha do plano (sem filhos — não
+    depende de nível) que contribuem para o DRE (exibir_dre=True).
 
-    Categorias que NÃO estiverem em nivel3_validas serão ignoradas por
+    Categorias que NÃO estiverem em folhas_validas serão ignoradas por
     gerar_dre() e seus valores somam zero no DRE — silenciosamente.
 
     Args:
         lancamentos:      lista de lançamentos após mapeamento (categoria_origem = descricao final)
-        nivel3_validas:   set de descrições de nível 3 com exibir_dre=True do plano
+        folhas_validas:   set de descrições de conta-folha com exibir_dre=True do plano
         mapeamentos_supabase: mapeamentos ativos no Supabase (para diagnóstico de origem)
     """
     if not lancamentos:
@@ -224,17 +224,17 @@ def validar_categorias_dre(
         if l.get("categoria_origem")
     }
 
-    contrib   = sorted(cats_final & nivel3_validas)
-    nao_contrib = sorted(cats_final - nivel3_validas)
+    contrib   = sorted(cats_final & folhas_validas)
+    nao_contrib = sorted(cats_final - folhas_validas)
 
     sep = "-" * 60
     print(f"\n{sep}")
-    print("  Validação DRE — categoria_origem vs nível-3 do plano:")
+    print("  Validação DRE — categoria_origem vs conta-folha do plano:")
     print(f"    contribuem para o DRE:     {len(contrib):>4}")
-    print(f"    NÃO contribuem (sem nível-3): {len(nao_contrib):>4}")
+    print(f"    NÃO contribuem (sem conta-folha): {len(nao_contrib):>4}")
 
     if nao_contrib:
-        print(f"\n  ⚠  Categorias que NÃO aparecem no DRE (não encontradas em nível-3):")
+        print(f"\n  ⚠  Categorias que NÃO aparecem no DRE (não encontradas em conta-folha):")
         for cat in nao_contrib:
             # Identifica se veio do Supabase (para apontar a correção necessária)
             if cat in supabase_destinos:
@@ -242,18 +242,18 @@ def validar_categorias_dre(
                 print(
                     f"    ⚠  {cat!r}\n"
                     f"       ← Supabase mapeou {orig!r} para este valor,\n"
-                    f"          mas {cat!r} NÃO existe em nível-3 no plano_contas_cliente.csv.\n"
-                    f"          Corrija descricao_conta no Lovable para um valor de nível-3 válido."
+                    f"          mas {cat!r} NÃO existe como conta-folha no plano_contas_cliente.csv.\n"
+                    f"          Corrija descricao_conta no Lovable para uma conta-folha válida."
                 )
                 logger.warning(
-                    "DRE: Supabase mapeou %r → %r, mas %r não é nível-3 no plano. "
+                    "DRE: Supabase mapeou %r → %r, mas %r não é conta-folha no plano. "
                     "Valor perdido no DRE.", orig, cat, cat,
                 )
             else:
-                print(f"    ⚠  {cat!r}  (não mapeada a nenhum nível-3)")
-                logger.warning("DRE: categoria %r não encontrada em nível-3 do plano.", cat)
+                print(f"    ⚠  {cat!r}  (não mapeada a nenhuma conta-folha)")
+                logger.warning("DRE: categoria %r não encontrada em conta-folha do plano.", cat)
     else:
-        print("  ✓ Todas as categorias estão mapeadas a nível-3 → DRE completo.")
+        print("  ✓ Todas as categorias estão mapeadas a uma conta-folha → DRE completo.")
 
     if contrib:
         print(f"\n  Categorias que contribuem para o DRE ({len(contrib)}):")

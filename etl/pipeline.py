@@ -27,7 +27,7 @@ from config import CLIENTES
 from etl.reader import read_excel
 from etl.clients.base import ResultadoETL
 from etl.paths import resolver_plano_contas
-from etl.plano_contas import ler_plano_contas_df, ler_mapeamento_plano
+from etl.plano_contas import ler_plano_contas_df, ler_mapeamento_plano, ids_agregadores
 from etl.dre import gerar_dre
 from etl.mapeamentos import (
     carregar_mapeamentos_supabase,
@@ -171,13 +171,22 @@ def run_pipeline(
     if not plano_df.empty:
         _mask_dre = plano_df["exibir_dre"].fillna(True).astype(bool)
         plano_dre = plano_df[_mask_dre].copy()
-        nivel3_validas: set = set(
-            plano_dre[plano_dre["nivel"] == 3]["descricao"].dropna()
+        # Contas-folha (sem filhos, não calculadas) do subset exibido no DRE —
+        # não depende de estar em nível 3; folha pode estar em qualquer nível.
+        # Contas calculadas nunca recebem lançamento direto, mesmo childless.
+        _ids_pai_dre = ids_agregadores(plano_dre)
+        _e_calculada_dre = plano_dre["tipo_conta"] == "calculada"
+        folhas_validas: set = set(
+            plano_dre[(~plano_dre["id_conta"].isin(_ids_pai_dre)) & (~_e_calculada_dre)]["descricao"].dropna()
         )
-        n_auditoria = int((plano_df["nivel"] == 3).sum()) - int((plano_dre["nivel"] == 3).sum())
+        _ids_pai_completo = ids_agregadores(plano_df)
+        _e_calculada_completo = plano_df["tipo_conta"] == "calculada"
+        n_folhas_total = int(((~plano_df["id_conta"].isin(_ids_pai_completo)) & (~_e_calculada_completo)).sum())
+        n_folhas_dre = int((~plano_dre["id_conta"].isin(_ids_pai_dre) & (~_e_calculada_dre)).sum())
+        n_auditoria = n_folhas_total - n_folhas_dre
     else:
         plano_dre = pd.DataFrame()
-        nivel3_validas = set()
+        folhas_validas = set()
         n_auditoria = 0
 
     if mapeamento_plano:
@@ -216,13 +225,13 @@ def run_pipeline(
         mapeamento_manual=_mapeamento_manual,
     )
 
-    # ── Validação DRE: categorias mapeadas vs nível-3 com exibir_dre=True ─
+    # ── Validação DRE: categorias mapeadas vs contas-folha com exibir_dre=True ─
     # Mostra quais categoria_origem dos lançamentos contribuirão ao DRE e quais
-    # serão silenciosamente ignoradas (descricao não encontrada em nivel3_validas).
+    # serão silenciosamente ignoradas (descricao não encontrada em folhas_validas).
     if not plano_df.empty:
         validar_categorias_dre(
             lancamentos=resultado.lancamentos,
-            nivel3_validas=nivel3_validas,
+            folhas_validas=folhas_validas,
             mapeamentos_supabase=_mapeamentos_supabase,
         )
 

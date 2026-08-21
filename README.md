@@ -94,7 +94,7 @@ Gerados em `saida/{cliente}/{mes_ref}/`:
 | Arquivo | Conteúdo |
 |---|---|
 | `lancamentos_normalizados.csv` | Todos os lançamentos com categoria mapeada |
-| `dre_mensal.csv` | DRE estruturado por nível (1, 2, 3) e linhas de resultado |
+| `dre_mensal.csv` | DRE estruturado por conta folha/agregadora (profundidade variável) e linhas de resultado |
 | `resumo_conferencia.csv` | Total ERP × Total ETL, diferença e contagens |
 | `resumo_auditoria.csv` | Por empresa/tipo (apenas Zeus multi-CNPJ) |
 | `inconsistencias.csv` | Lançamentos com problemas de parsing |
@@ -109,30 +109,64 @@ Gerados em `saida/{cliente}/{mes_ref}/`:
 Separador `;` ou `,` (detectado automaticamente). Colunas:
 
 ```
-id_conta;nivel;conta_pai;ordem;descricao;sinal;exibir_dre;auditoria_only;categoria_origem
+id_conta;nivel;conta_pai;ordem;descricao;sinal;exibir_dre;auditoria_only;categoria_origem;tipo_conta;formula
 ```
 
 | Coluna | Tipo | Obrigatório | Descrição |
 |---|---|---|---|
 | `id_conta` | int | Sim | Identificador único da conta |
-| `nivel` | int (1–3) | Sim | Nível hierárquico (1=grupo, 2=subgrupo, 3=conta) |
+| `nivel` | int | Sim | Nível hierárquico, usado só para exibição/ordenação/validação — **não** determina se a conta é folha nem limita a profundidade da árvore (ver "Regras") |
 | `conta_pai` | int | Sim | `id_conta` do nível acima (vazio no nível 1) |
 | `ordem` | int | Sim | Ordem de exibição no DRE |
 | `descricao` | str | Sim | Nome gerencial da conta |
 | `sinal` | int (+1/-1) | Sim | Inverte o sinal para exibição (+receitas / −despesas) |
 | `exibir_dre` | bool | Não¹ | Inclui a linha no DRE (padrão: `true`) |
 | `auditoria_only` | bool | Não¹ | Categoria de conferência, mapeada mas fora do DRE (padrão: `false`) |
-| `categoria_origem` | str | Não¹ | Nome exato da categoria no ERP; chave do mapeamento automático |
+| `categoria_origem` | str | Não¹ | Nome exato da categoria no ERP; chave do mapeamento automático. Só é válido em conta folha (ver "Regras") |
+| `tipo_conta` | str | Não¹ | `calculada` marca uma conta cujo valor vem exclusivamente da fórmula em `formula` — nunca de rollup nem de lançamentos. Qualquer outro valor (ou coluna ausente) é tratado como `estrutural` (padrão) |
+| `formula` | str | Não¹ | Obrigatória quando `tipo_conta=calculada`. Ver "Contas calculadas — fórmulas declarativas" abaixo |
 
 ¹ Colunas opcionais com retrocompatibilidade: CSVs no formato antigo (6 colunas) funcionam com os valores padrão.
 
 ### Regras
 
-- Níveis 1 e 2 podem ter `categoria_origem` vazio.
-- Nível 3 deve ter `categoria_origem` preenchido (o pipeline emite aviso se ausente).
-- Múltiplas linhas de nível 3 podem ter `categoria_origem` diferentes apontando para a mesma `descricao`.
+Toda conta do plano tem exatamente um de três papéis, mutuamente exclusivos:
+
+1. **Folha estrutural** — `id_conta` não aparece como `conta_pai` de nenhuma outra linha, e não é `tipo_conta=calculada`. Recebe lançamentos: `valor_base` = soma dos lançamentos cujo `categoria_origem` (já mapeado) bate com sua `descricao`.
+2. **Agregadora estrutural** — é `conta_pai` de outra(s) linha(s). `valor_base` = soma recursiva dos filhos.
+3. **Conta calculada** — `tipo_conta=calculada`. `valor_base` vem exclusivamente da `formula` declarada; nunca de rollup nem de lançamentos. **Não pode ter filhos nem `categoria_origem` preenchida** — ambos são erro explícito na carga do plano.
+
+Papel é determinado pela estrutura `id_conta`/`conta_pai`/`tipo_conta` — nunca pelo valor de `nivel` (que é só exibição/ordenação) nem pelo nome (`descricao`). A árvore pode ter qualquer profundidade.
+
+- Só conta folha pode ter `categoria_origem` preenchido. Uma conta agregadora com `categoria_origem` preenchido é **estrutura inválida**: ignorada na construção do mapeamento, erro registrado no log — não existe comportamento de "valor próprio + filhos".
+- Múltiplas linhas com o mesmo `id_conta` podem ter `categoria_origem` diferentes apontando para a mesma conta, em qualquer nível. O rollup soma cada `id_conta` uma única vez no agregador-pai — sem dupla contagem.
 - `auditoria_only=true`: categoria mapeada para evitar falso positivo em `categorias_nao_mapeadas.csv`, mas excluída do DRE.
 - Booleanos aceitos: `Sim/Não`, `true/false`, `1/0`, `sim/não` (case-insensitive).
+
+### Contas calculadas — fórmulas declarativas
+
+`formula` é uma lista de termos separados por **espaço** (nunca `;`, que colidiria com o delimitador do CSV), cada termo no formato:
+
+```
+[+-]coeficiente*id_conta
+```
+
+Exemplo: `"+1*1 -1*23"` soma a conta `id_conta=1` e subtrai a conta `id_conta=23`. **Referencia sempre `id_conta`, nunca `descricao`** — `descricao` é atributo de apresentação e pode ser renomeado sem quebrar nenhuma fórmula. Não é um parser de expressão genérico (sem precedência, sem parênteses, sem `eval`) — deliberadamente restrito a soma/subtração de termos coeficiente×conta.
+
+Semântica de cálculo: a fórmula opera sobre o `valor_base` **natural** (pré-sinal) das contas referenciadas — o mesmo espaço onde folha/agregadora já operam. O `sinal` da própria conta calculada é aplicado depois, uma única vez, exatamente como para qualquer outra conta. Isso significa que o coeficiente de um termo que referencia uma conta com `sinal=-1` normalmente é `+1`, não `-1` — ver exemplo comentado em `tests/test_formulas_calculadas.py::TestSemanticaSinalNaturalVsExibido`.
+
+Uma conta calculada pode referenciar folha, agregadora ou outra conta calculada (dependência entre calculadas), em qualquer nível e em qualquer ordem física no CSV — a ordem de dependência é resolvida por recursão memoizada com detecção de ciclo, nunca pela ordem das linhas.
+
+Validado na carga do plano, com erro explícito (nunca falha silenciosa com `0.0`):
+- referência a `id_conta` inexistente;
+- `tipo_conta=calculada` sem `formula` (ou vazia);
+- sintaxe de `formula` inválida;
+- autorreferência direta;
+- dependência circular entre contas calculadas;
+- conta calculada que também é agregadora (tem filhos);
+- conta calculada com `categoria_origem` preenchida.
+
+**Compatibilidade legada:** nenhum plano é obrigado a usar `tipo_conta`/`formula`. Uma descrição que exista em `etl/dre.py::_FORMULAS_RESULTADO` (`RECEITA LÍQUIDA`, `MARGEM DE CONTRIBUIÇÃO`, `RESULTADO OPERACIONAL`, `RESULTADO`) e não tenha sido explicitamente declarada `calculada` continua sendo resolvida pelo mecanismo antigo (por nome, sobre valores já exibidos) — um fallback mantido só para planos que ainda não migraram. Um plano não depende do nome de nenhuma conta para ter comportamento correto assim que declara suas próprias fórmulas.
 
 ### Nome do arquivo
 
@@ -162,17 +196,15 @@ Categorias sem nenhum mapeamento são registradas em `categorias_nao_mapeadas.cs
 
 ## Algoritmo do DRE
 
-1. **Nível 3** — soma dos lançamentos cujo `categoria_origem` bate com `descricao` de uma conta nível 3 com `exibir_dre=True`.
-2. **Nível 2** — rollup: soma dos filhos de nível 3.
-3. **Nível 1** — rollup: soma dos filhos de nível 2.
-4. **Sinal** — cada linha é multiplicada pelo campo `sinal` do plano.
-5. **Linhas de resultado** — calculadas por fórmulas em `etl/dre.py`:
-   - `RECEITA LÍQUIDA = RECEITA BRUTA − DEDUÇÕES DA RECEITA`
-   - `MARGEM DE CONTRIBUIÇÃO = RECEITA LÍQUIDA − CUSTO VARIÁVEL`
-   - `RESULTADO OPERACIONAL = MARGEM DE CONTRIBUIÇÃO − DESPESAS FIXAS`
-   - `RESULTADO = RESULTADO OPERACIONAL + RECEITAS FINANCEIRAS − DESPESAS FINANCEIRAS − PASSIVO − INVESTIMENTOS − DIVISÃO DE LUCROS`
+1. **Conta folha** (sem filhos, não calculada, `exibir_dre=True`) — `valor_base` = soma dos lançamentos cujo `categoria_origem` bate com sua `descricao`.
+2. **Conta agregadora** (tem filhos) — `valor_base` = rollup recursivo bottom-up dos filhos, deduplicado por `id_conta`. Qualquer profundidade, sem passo fixo por nível.
+3. **Conta calculada** (`tipo_conta=calculada`) — `valor_base` = combinação declarada em `formula`, resolvida recursivamente (pode referenciar folha, agregadora ou outra calculada). Ver "Contas calculadas — fórmulas declarativas" acima.
+4. **Sinal** — aplicado uma única vez, sobre o `valor_base` já consolidado de cada conta (folha, agregadora **ou calculada**, por igual), multiplicando pelo campo `sinal` do plano.
+5. **Fallback legado** — uma descrição presente em `_FORMULAS_RESULTADO` (`RECEITA LÍQUIDA`, `MARGEM DE CONTRIBUIÇÃO`, `RESULTADO OPERACIONAL`, `RESULTADO`) que **não** tenha sido declarada `calculada` em nenhuma linha do plano continua calculada pelo mecanismo antigo, por casamento de nome sobre valores já exibidos — mantido só para planos ainda não migrados para o mecanismo declarativo.
 
-Os nomes das linhas de resultado devem existir exatamente como `descricao` no plano de contas.
+Os nomes das linhas de resultado do fallback legado devem existir exatamente como `descricao` no plano de contas; contas calculadas declarativas não têm essa restrição (referenciam por `id_conta`).
+
+Exemplo real de profundidade variável: no plano do Zeus, `Encargos da Folha` (nível 3) é agregadora de `INSS / IRRF` e `FGTS` (nível 4, folhas) — o rollup soma essas duas folhas em `Encargos da Folha` normalmente, sem tratamento especial por nível.
 
 ---
 
@@ -190,7 +222,7 @@ Os nomes das linhas de resultado devem existir exatamente como `descricao` no pl
 - PDFs configurados por mês em `cfg/clientes/zeus/config.yml`.
 - Parsing posicional de coordenadas x pelo `etl/clients/zeus_reader.py`.
 - O campo `empresa_origem` de cada PDF é propagado nos lançamentos para auditoria, mas não afeta o DRE.
-- O plano atual usa o formato novo (9 colunas).
+- O plano em `cfg/clientes/zeus/plano_contas_zeus.csv` usa o formato novo (11 colunas) e já tem suas 4 linhas de resultado (`RECEITA LÍQUIDA`, `MARGEM DE CONTRIBUIÇÃO`, `RESULTADO OPERACIONAL`, `RESULTADO`) declaradas como `tipo_conta=calculada` com fórmula por `id_conta` — migração técnica que reproduz exatamente o comportamento do fallback legado (ver `ESTADO.md`). Esse arquivo ainda **não** está no caminho canônico (`plano_contas_cliente.csv`) — `resolver_plano_contas()` continua caindo no fallback legado de `~/Downloads/`.
 
 ---
 
